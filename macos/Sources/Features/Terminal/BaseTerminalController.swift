@@ -42,6 +42,7 @@ class BaseTerminalController: NSWindowController,
 
     /// The tree of splits within this terminal window.
     @Published var surfaceTree: SplitTree<Ghostty.SurfaceView> = .init() {
+        willSet { surfaceTreeWillChange(from: surfaceTree, to: newValue) }
         didSet { surfaceTreeDidChange(from: oldValue, to: surfaceTree) }
     }
 
@@ -284,7 +285,18 @@ class BaseTerminalController: NSWindowController,
         }
     }
 
-    /// Called when the surfaceTree variable changed.
+    /// Called immediately before the surface tree changes. This gives the
+    /// app-owned ShareCLI inventory a synchronous incomplete transition before
+    /// any split is added, removed, or replaced.
+    func surfaceTreeWillChange(from: SplitTree<Ghostty.SurfaceView>, to: SplitTree<Ghostty.SurfaceView>) {
+        NotificationCenter.default.post(
+            name: .shareCLISurfaceTreeDidChange,
+            object: self,
+            userInfo: [Notification.Name.shareCLISurfaceTreeChangePhaseKey: "willChange"]
+        )
+    }
+
+    /// Called after the surfaceTree variable changed.
     ///
     /// Subclasses should call super first.
     func surfaceTreeDidChange(from: SplitTree<Ghostty.SurfaceView>, to: SplitTree<Ghostty.SurfaceView>) {
@@ -293,6 +305,11 @@ class BaseTerminalController: NSWindowController,
             focusedSurface = nil
         }
         syncSurfaceTreeOcclusionState()
+        NotificationCenter.default.post(
+            name: .shareCLISurfaceTreeDidChange,
+            object: self,
+            userInfo: [Notification.Name.shareCLISurfaceTreeChangePhaseKey: "didChange"]
+        )
     }
 
     /// Update all surfaces with the focus state. This ensures that libghostty has an accurate view about
@@ -1594,4 +1611,13 @@ extension Notification.Name {
     /// Terminal window aggregate bell state changed.
     static let terminalWindowBellDidChangeNotification = Notification.Name("com.mitchellh.ghostty.terminalWindowBellDidChange")
     static let terminalWindowHasBellKey = terminalWindowBellDidChangeNotification.rawValue + ".hasBell"
+
+    /// A terminal controller changed its native SurfaceView tree. The
+    /// app-owned ShareCLI endpoint uses this to reconcile weak UUID bindings;
+    /// it does not imply a completed process-wide inventory.
+    static let shareCLISurfaceTreeDidChange = Notification.Name(
+        "com.mitchellh.ghostty.shareCLI.surfaceTreeDidChange"
+    )
+    static let shareCLISurfaceTreeChangePhaseKey =
+        "com.mitchellh.ghostty.shareCLI.surfaceTreeChangePhase"
 }

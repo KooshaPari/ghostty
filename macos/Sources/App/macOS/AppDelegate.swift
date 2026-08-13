@@ -104,6 +104,11 @@ class AppDelegate: NSObject,
     /// The current state of the quick terminal.
     private var quickTerminalControllerState: QuickTerminalState = .uninitialized
 
+    /// Native, owner-only ShareCLI endpoint. It is intentionally app-owned so
+    /// the listener is created only after Ghostty's app state exists and is
+    /// invalidated before terminal/surface teardown.
+    @MainActor private lazy var shareCLIControl = ShareCLIControlBootstrap()
+
     /// Whether the quick terminal has already been initialized.
     var quickControllerInitialized: Bool {
         if case .initialized = quickTerminalControllerState {
@@ -276,6 +281,11 @@ class AppDelegate: NSObject,
             selector: #selector(ghosttyNewTab(_:)),
             name: Ghostty.Notification.ghosttyNewTab,
             object: nil)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(shareCLISurfaceTreeDidChange(_:)),
+            name: .shareCLISurfaceTreeDidChange,
+            object: nil)
 
         // Configure user notifications
         let actions = [
@@ -316,6 +326,13 @@ class AppDelegate: NSObject,
 
         // Setup signal handlers
         setupSignals()
+
+        // Start after Ghostty's app configuration and delegate are ready. The
+        // first inventory is reconciled from the live controller trees. Later
+        // updates are driven only by those native tree lifecycle notifications.
+        if shareCLIControl.start() {
+            synchronizeShareCLIControlSurfaces()
+        }
 
         switch Ghostty.launchSource {
         case .app:
@@ -416,6 +433,10 @@ class AppDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Revoke provider access and synchronously close the listener before
+        // Ghostty begins surface/PTY teardown.
+        shareCLIControl.stop()
+
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.
@@ -733,6 +754,30 @@ class AppDelegate: NSObject,
         let config = configAny as? Ghostty.SurfaceConfiguration
 
         _ = TerminalController.newTab(ghostty, from: window, withBaseConfig: config)
+    }
+
+    @MainActor @objc private func shareCLISurfaceTreeDidChange(_ notification: Notification) {
+        if notification.userInfo?[Notification.Name.shareCLISurfaceTreeChangePhaseKey] as? String
+            == "willChange" {
+            shareCLIControl.beginSurfaceTreeTransition()
+            return
+        }
+        synchronizeShareCLIControlSurfaces()
+    }
+
+    @MainActor private func synchronizeShareCLIControlSurfaces() {
+        var surfaces = TerminalController.all.flatMap { Array($0.surfaceTree) }
+        if case let .initialized(quickTerminal) = quickTerminalControllerState {
+            surfaces.append(contentsOf: quickTerminal.surfaceTree)
+        }
+        shareCLIControl.synchronize(surfaces)
+    }
+
+    /// Called by Ghostty's native render action after the renderer has
+    /// coalesced surface changes. It is intentionally separate from surface
+    /// inventory reconciliation so content events never depend on polling.
+    @MainActor func publishShareCLIVisibleScreen(_ surface: Ghostty.SurfaceView) {
+        shareCLIControl.publishVisibleScreen(surface)
     }
 
     private func setDockBadge() {
