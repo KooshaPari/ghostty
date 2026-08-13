@@ -531,6 +531,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_EQUALIZE_SPLITS:
                 equalizeSplits(app, target: target)
 
+            case GHOSTTY_ACTION_RENDER:
+                publishShareCLIVisibleScreen(app, target: target)
+
             case GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM:
                 return toggleSplitZoom(app, target: target)
 
@@ -708,6 +711,23 @@ extension Ghostty {
         ) {
             if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
                 appDelegate.checkForUpdates(nil)
+            }
+        }
+
+        /// A render action is Ghostty's coalesced GUI-thread boundary after a
+        /// surface has changed. ShareCLI samples the already-visible viewport
+        /// here instead of observing reads or running its own screen timer.
+        private static func publishShareCLIVisibleScreen(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s
+        ) {
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = surfaceView(from: surface),
+                  let appDelegate = NSApplication.shared.delegate as? AppDelegate
+            else { return }
+            Task { @MainActor in
+                appDelegate.publishShareCLIVisibleScreen(surfaceView)
             }
         }
 
